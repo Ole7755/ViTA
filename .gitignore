@@ -1,0 +1,43 @@
+# Local datasets
+/dataset/
+/data/
+
+# Training outputs and model artifacts
+/outputs/
+/runs/
+/checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.onnx
+*.engine
+*.safetensors
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+/tmp/
+
+# Python cache and environments
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.ipynb_checkpoints/
+.venv/
+venv/
+env/
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Local reference files not needed for code release
+/related/
