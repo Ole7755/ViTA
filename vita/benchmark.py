@@ -53,18 +53,7 @@ def main() -> None:
 
     images = args.batch_size * args.steps
     fps = images / elapsed
-    latency_ms = elapsed * 1000 / args.steps
-    print(
-        {
-            "device": device.type,
-            "batch_size": args.batch_size,
-            "steps": args.steps,
-            "images": images,
-            "seconds": elapsed,
-            "fps": fps,
-            "latency_ms_per_batch": latency_ms,
-        }
-    )
+    print(f"FPS: {fps:.2f}")
 
 
 if __name__ == "__main__":

@@ -1,0 +1,28 @@
+experiment_name: local_convnext_tiny_eval
+output_dir: outputs
+seed: 42
+
+data:
+  image_size: 224
+  batch_size: 16
+  eval_batch_size: 16
+  num_workers: 0
+  pin_memory: false
+  datasets:
+    - root: /Users/ole/Documents/ViTA/dataset/mrl
+      class_map:
+        sleepy: 0
+        awake: 1
+
+model:
+  name: convnext_tiny
+  pretrained: false
+
+train:
+  device: cpu
+  epochs: 1
+  lr: 0.00005
+  weight_decay: 0.05
+  warmup_epochs: 0
+  amp: false
+  class_weight: false

@@ -10,7 +10,7 @@ from tqdm import tqdm
 
 from .data import build_loader
 from .models import build_model
-from .utils import CLASS_NAMES, load_config, metrics_from_confusion, save_json, update_confusion_matrix
+from .utils import CLASS_NAMES, load_config, save_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -26,14 +26,17 @@ def parse_args() -> argparse.Namespace:
 @torch.inference_mode()
 def evaluate(model: nn.Module, loader, device: torch.device, amp: bool) -> dict:
     model.eval()
-    matrix = [[0 for _ in CLASS_NAMES] for _ in CLASS_NAMES]
+    correct = 0
+    total = 0
     for images, targets in tqdm(loader, leave=False, desc="eval"):
         images = images.to(device, non_blocking=True)
+        targets = targets.to(device, non_blocking=True)
         with autocast(enabled=amp and device.type == "cuda"):
             logits = model(images)
-        preds = logits.argmax(dim=1).cpu()
-        update_confusion_matrix(matrix, preds, targets.cpu(), len(CLASS_NAMES))
-    return metrics_from_confusion(matrix)
+        preds = logits.argmax(dim=1)
+        correct += int((preds == targets).sum().detach().cpu())
+        total += targets.size(0)
+    return {"accuracy": correct / max(total, 1)}
 
 
 def main() -> None:
@@ -48,7 +51,7 @@ def main() -> None:
 
     loader = build_loader(cfg, split=args.split, train=False)
     metrics = evaluate(model, loader, device, amp=bool(cfg["train"].get("amp", True)))
-    print(metrics)
+    print(f"ACC: {metrics['accuracy']:.4f}")
 
     if args.output:
         save_json(metrics, Path(args.output))

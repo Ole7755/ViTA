@@ -17,11 +17,8 @@ from .utils import (
     CLASS_NAMES,
     compute_class_weights,
     load_config,
-    metrics_from_confusion,
     save_json,
     set_seed,
-    short_metrics,
-    update_confusion_matrix,
 )
 
 
@@ -40,12 +37,12 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None = None,
     scaler: GradScaler | None = None,
     amp: bool = False,
-) -> tuple[float, dict[str, Any]]:
+) -> tuple[float, float]:
     training = optimizer is not None
     model.train(training)
     total_loss = 0.0
     total_samples = 0
-    matrix = [[0 for _ in CLASS_NAMES] for _ in CLASS_NAMES]
+    correct_samples = 0
 
     iterator = tqdm(loader, leave=False, desc="train" if training else "val")
     with torch.set_grad_enabled(training):
@@ -69,11 +66,14 @@ def run_epoch(
             batch_size = targets.size(0)
             total_loss += float(loss.detach().cpu()) * batch_size
             total_samples += batch_size
-            preds = logits.argmax(dim=1).detach().cpu()
-            update_confusion_matrix(matrix, preds, targets.detach().cpu(), len(CLASS_NAMES))
-            iterator.set_postfix(loss=total_loss / max(total_samples, 1))
+            preds = logits.argmax(dim=1)
+            correct_samples += int((preds == targets).sum().detach().cpu())
+            iterator.set_postfix(
+                loss=total_loss / max(total_samples, 1),
+                acc=correct_samples / max(total_samples, 1),
+            )
 
-    return total_loss / max(total_samples, 1), metrics_from_confusion(matrix)
+    return total_loss / max(total_samples, 1), correct_samples / max(total_samples, 1)
 
 
 def save_checkpoint(
@@ -82,7 +82,7 @@ def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    metrics: dict[str, Any],
+    metrics: dict[str, float],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -150,10 +150,9 @@ def main() -> None:
                 "epoch",
                 "lr",
                 "train_loss",
+                "train_accuracy",
                 "val_loss",
                 "val_accuracy",
-                "val_balanced_accuracy",
-                "val_macro_f1",
                 "seconds",
             ],
         )
@@ -161,13 +160,14 @@ def main() -> None:
 
         for epoch in range(1, epochs + 1):
             started = time.perf_counter()
-            train_loss, _ = run_epoch(
+            train_loss, train_acc = run_epoch(
                 model, train_loader, criterion, device, optimizer=optimizer, scaler=scaler, amp=amp
             )
-            val_loss, val_metrics = run_epoch(model, val_loader, criterion, device, amp=amp)
+            val_loss, val_acc = run_epoch(model, val_loader, criterion, device, amp=amp)
             scheduler.step()
 
-            score = float(val_metrics["balanced_accuracy"])
+            score = float(val_acc)
+            val_metrics = {"accuracy": val_acc}
             if score > best_score:
                 best_score = score
                 save_checkpoint(output_dir / "best.pt", cfg, model, optimizer, epoch, val_metrics)
@@ -177,18 +177,22 @@ def main() -> None:
                 "epoch": epoch,
                 "lr": optimizer.param_groups[0]["lr"],
                 "train_loss": train_loss,
+                "train_accuracy": train_acc,
                 "val_loss": val_loss,
-                "val_accuracy": val_metrics["accuracy"],
-                "val_balanced_accuracy": val_metrics["balanced_accuracy"],
-                "val_macro_f1": val_metrics["macro_f1"],
+                "val_accuracy": val_acc,
                 "seconds": time.perf_counter() - started,
             }
             writer.writerow(row)
             f.flush()
-            print(f"epoch={epoch} train_loss={train_loss:.4f} val_loss={val_loss:.4f} {short_metrics(val_metrics)}")
+            print(
+                "epoch={} train_loss={:.4f} train_acc={:.4f} "
+                "val_loss={:.4f} val_acc={:.4f}".format(
+                    epoch, train_loss, train_acc, val_loss, val_acc
+                )
+            )
 
-    print(f"best_balanced_accuracy={best_score:.4f}")
-    print(f"output_dir={output_dir}")
+    print("best_accuracy={:.4f}".format(best_score))
+    print("output_dir={}".format(output_dir))
 
 
 if __name__ == "__main__":

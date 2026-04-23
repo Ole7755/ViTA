@@ -1,4 +1,4 @@
-experiment_name: mrl_swin_t_scratch
+experiment_name: mrl_swin_t_finetune
 output_dir: outputs
 seed: 42
 
@@ -24,13 +24,13 @@ data:
 
 model:
   name: swin_tiny_patch4_window7_224
-  pretrained: false
+  pretrained: true
 
 train:
   device: cuda
-  epochs: 100
-  lr: 0.0005
+  epochs: 30
+  lr: 0.00005
   weight_decay: 0.05
-  warmup_epochs: 5
+  warmup_epochs: 2
   amp: true
-  class_weight: true
+  class_weight: false

@@ -6,6 +6,7 @@
 /outputs/
 /runs/
 /checkpoints/
+/ckp/
 *.pt
 *.pth
 *.ckpt
