@@ -5,7 +5,7 @@ from pathlib import Path
 
 import torch
 from torch import nn
-from torch.cuda.amp import autocast
+from torch.amp import autocast
 from tqdm import tqdm
 
 from .data import build_loader
@@ -31,7 +31,7 @@ def evaluate(model: nn.Module, loader, device: torch.device, amp: bool) -> dict:
     for images, targets in tqdm(loader, leave=False, desc="eval"):
         images = images.to(device, non_blocking=True)
         targets = targets.to(device, non_blocking=True)
-        with autocast(enabled=amp and device.type == "cuda"):
+        with autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
             logits = model(images)
         preds = logits.argmax(dim=1)
         correct += int((preds == targets).sum().detach().cpu())

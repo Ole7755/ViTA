@@ -8,7 +8,7 @@ from typing import Any
 
 import torch
 from torch import nn
-from torch.cuda.amp import GradScaler, autocast
+from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
 from .data import build_loader, label_counts
@@ -53,7 +53,7 @@ def run_epoch(
             if training:
                 optimizer.zero_grad(set_to_none=True)
 
-            with autocast(enabled=amp and device.type == "cuda"):
+            with autocast(device_type=device.type, enabled=amp and device.type == "cuda"):
                 logits = model(images)
                 loss = criterion(logits, targets)
 
@@ -139,7 +139,7 @@ def main() -> None:
     else:
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
     amp = bool(cfg["train"].get("amp", True))
-    scaler = GradScaler(enabled=amp and device.type == "cuda")
+    scaler = GradScaler("cuda", enabled=amp and device.type == "cuda")
 
     best_score = -1.0
     history_path = output_dir / "metrics.csv"

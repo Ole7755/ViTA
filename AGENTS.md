@@ -31,8 +31,8 @@
 #### 在本地上笔记本上的性能
 |Dataset|ACC|FPS|CPU FPS|
 |:-:|:-:|:-:|:-:|
-|MRL| 0.9902  |   33.31| 33.31|
-|OCE| 0.9651   |  32.84| 32.84  |
+|MRL|  |   | 33.31|
+|OCE|   |  | |
 
 
 ### convnext_tiny
@@ -54,8 +54,8 @@
 #### 在本地上笔记本上的性能
 |Dataset|ACC|FPS|CPU FPS|
 |:-:|:-:|:-:|:-:|
-|MRL| 0.9902  |   3.16| 3.16|
-|OCE| 0.9651   |  3.18| 3.18  |
+|MRL|  |  | 3.16|
+|OCE|   |  |   |
 
 ### ResNet-50
 - input size: [B, 3, 224, 224]
@@ -76,8 +76,97 @@
 #### 在本地上笔记本上的性能
 |Dataset|ACC|FPS|CPU FPS|
 |:-:|:-:|:-:|:-:|
-|MRL| 0.9902  |   46.26| 46.26|
-|OCE| 0.9651   |  44.87| 44.87  |
+|MRL|  |   | 46.26|
+|OCE|    |  |   |
+
+### swin_tiny_patch4_window7_224
+- input size: [B, 3, 128, 128]
+- param: 27.52M
+
+#### 微调
+- 数据预处理: Resize((128, 128)) , RandomHorizontalFlip(p=0.5), ToTensor(), Normalize(ImageNet mean/std)
+- 模型架构只改了模型分类头
+- epochs: 5
+- lr: 0.0005
+
+##### 在MRL微调
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL| 0.9924  |  94.30| 35.37 |
+|OCE| 0.9672  |   |   |
+
+#### 在本地上笔记本上的性能
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL| |   | 37.60|
+|OCE|    |  |   |
+
+
+### convnext_tiny
+- input size: [B, 3, 128, 128]
+- param: 27.82M
+
+#### 微调
+- 数据预处理: Resize((128, 128)) , RandomHorizontalFlip(p=0.5), ToTensor(), Normalize(ImageNet mean/std)
+- 模型架构只改了模型分类头
+- epochs: 5
+- lr: 0.0005
+
+##### 在MRL微调
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL| 0.9922  |  151.24 | 52.36|
+|OCE| 0.9806   |   |  |
+
+#### 在本地上笔记本上的性能
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL|   |   | 2.49|
+|OCE|   |  |   |
+
+### ResNet-50
+- input size: [B, 3, 128, 128]
+- param: 23.51M
+
+#### 微调
+- 数据预处理: Resize((128, 128)) , RandomHorizontalFlip(p=0.5), ToTensor(), Normalize(ImageNet mean/std)
+- 模型架构只改了模型分类头
+- epochs: 5
+- lr: 0.0005
+
+##### 在MRL微调
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL| 0.9882   |  157.78 | 32.50|
+|OCE| 0.9466    |   |  |
+
+#### 在本地上笔记本上的性能
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL|   |   | 69.21|
+|OCE|    |  |  |
+
+### mobilenetv3_large_100
+- input size: [B, 3, 128, 128]
+- param: 23.51M
+
+#### 微调
+- 数据预处理: Resize((128, 128)) , RandomHorizontalFlip(p=0.5), ToTensor(), Normalize(ImageNet mean/std)
+- 模型架构只改了模型分类头
+- epochs: 5
+- lr: 0.0005
+
+##### 在MRL微调
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL| 0.9712    |  147.07 | 81.23|
+|OCE| 0.5484   |   |  |
+
+#### 在本地上笔记本上的性能
+|Dataset|ACC|FPS|CPU FPS|
+|:-:|:-:|:-:|:-:|
+|MRL|   |   | -|
+|OCE|    |  |  |
 
 ## 指标
 - FPS 每秒评测多少图像 (至少10帧 )
@@ -89,4 +178,4 @@
 - CPU: 16 核 AMD EPYC 7542
 
 ## 本地
-- CPU: M4 Pro (16+20)
+- CPU: M4 Pro 

@@ -11,4 +11,5 @@ def build_model(cfg: dict[str, Any], num_classes: int = 2, pretrained: bool | No
         model_cfg["name"],
         pretrained=bool(model_cfg.get("pretrained", True) if pretrained is None else pretrained),
         num_classes=num_classes,
+        **dict(model_cfg.get("kwargs", {})),
     )
