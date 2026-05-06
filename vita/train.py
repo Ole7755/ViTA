@@ -14,7 +14,7 @@ from tqdm import tqdm
 from .data import build_loader, label_counts
 from .models import build_model
 from .utils import (
-    CLASS_NAMES,
+    class_names_from_config,
     compute_class_weights,
     load_config,
     save_json,
@@ -79,6 +79,7 @@ def run_epoch(
 def save_checkpoint(
     path: Path,
     cfg: dict[str, Any],
+    class_names: list[str],
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
@@ -88,7 +89,7 @@ def save_checkpoint(
     torch.save(
         {
             "config": cfg,
-            "class_names": CLASS_NAMES,
+            "class_names": class_names,
             "epoch": epoch,
             "model": model.state_dict(),
             "optimizer": optimizer.state_dict(),
@@ -101,6 +102,7 @@ def save_checkpoint(
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    class_names = class_names_from_config(cfg)
     set_seed(int(cfg.get("seed", 42)))
 
     device_name = args.device or cfg["train"].get("device", "cuda")
@@ -111,9 +113,9 @@ def main() -> None:
 
     train_loader = build_loader(cfg, split="train", train=True)
     val_loader = build_loader(cfg, split="val", train=False)
-    model = build_model(cfg, num_classes=len(CLASS_NAMES)).to(device)
+    model = build_model(cfg, num_classes=len(class_names)).to(device)
 
-    counts = label_counts(train_loader.dataset, num_classes=len(CLASS_NAMES))
+    counts = label_counts(train_loader.dataset, num_classes=len(class_names))
     class_weights = None
     if bool(cfg["train"].get("class_weight", True)):
         class_weights = compute_class_weights(counts, device=device)
@@ -170,8 +172,10 @@ def main() -> None:
             val_metrics = {"accuracy": val_acc}
             if score > best_score:
                 best_score = score
-                save_checkpoint(output_dir / "best.pt", cfg, model, optimizer, epoch, val_metrics)
-            save_checkpoint(output_dir / "last.pt", cfg, model, optimizer, epoch, val_metrics)
+                save_checkpoint(
+                    output_dir / "best.pt", cfg, class_names, model, optimizer, epoch, val_metrics
+                )
+            save_checkpoint(output_dir / "last.pt", cfg, class_names, model, optimizer, epoch, val_metrics)
 
             row = {
                 "epoch": epoch,

@@ -12,6 +12,10 @@ from torchvision import transforms
 IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 
 
+def is_image_file(path: Path) -> bool:
+    return path.is_file() and not path.name.startswith(".") and path.suffix.lower() in IMAGE_EXTENSIONS
+
+
 class EyeImageFolder(Dataset):
     """ImageFolder-style dataset with explicit class-to-label mapping."""
 
@@ -28,7 +32,7 @@ class EyeImageFolder(Dataset):
             if not folder.exists():
                 raise FileNotFoundError(f"Missing class directory: {folder}")
             for path in sorted(folder.iterdir()):
-                if path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS:
+                if is_image_file(path):
                     self.samples.append((path, int(label)))
 
         if not self.samples:

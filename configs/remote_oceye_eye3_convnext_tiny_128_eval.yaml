@@ -1,0 +1,32 @@
+experiment_name: remote_oceye_eye3_convnext_tiny_128_eval
+output_dir: outputs
+seed: 42
+class_names:
+  - closed
+  - open
+  - irrelevant
+
+data:
+  image_size: 128
+  batch_size: 128
+  eval_batch_size: 256
+  num_workers: 8
+  pin_memory: true
+  datasets:
+    - root: /home/featurize/data
+      class_map:
+        closed: 0
+        open: 1
+
+model:
+  name: convnext_tiny
+  pretrained: false
+
+train:
+  device: cuda
+  epochs: 1
+  lr: 0.00005
+  weight_decay: 0.05
+  warmup_epochs: 0
+  amp: true
+  class_weight: false

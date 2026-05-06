@@ -8,7 +8,7 @@ import torch
 from torch.amp import autocast
 
 from .models import build_model
-from .utils import CLASS_NAMES, load_config, save_json
+from .utils import class_names_from_config, load_config, save_json
 
 
 def parse_args() -> argparse.Namespace:
@@ -28,14 +28,19 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     cfg = load_config(args.config)
+    class_names = class_names_from_config(cfg)
     device = torch.device(args.device if args.device == "cpu" or torch.cuda.is_available() else "cpu")
     if args.threads is not None:
         torch.set_num_threads(args.threads)
     image_size = int(cfg["data"].get("image_size", 224))
 
-    model = build_model(cfg, num_classes=len(CLASS_NAMES), pretrained=False).to(device)
+    checkpoint = None
     if args.checkpoint:
         checkpoint = torch.load(args.checkpoint, map_location=device)
+        if "class_names" in checkpoint:
+            class_names = [str(name) for name in checkpoint["class_names"]]
+    model = build_model(cfg, num_classes=len(class_names), pretrained=False).to(device)
+    if checkpoint is not None:
         model.load_state_dict(checkpoint["model"])
     model.eval()
 
