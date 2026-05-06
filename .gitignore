@@ -7,6 +7,7 @@
 /runs/
 /checkpoints/
 /ckp/
+/exports/
 *.pt
 *.pth
 *.ckpt
@@ -39,6 +40,7 @@ Thumbs.db
 .vscode/
 *.swp
 *.swo
-
+*.zip
 # Local reference files not needed for code release
 /related/
+
