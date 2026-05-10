@@ -1,4 +1,4 @@
-experiment_name: mrl_convnext_tiny_128_finetune
+experiment_name: eye3_mixed_unknown_convnext_tiny_128_finetune
 output_dir: outputs
 seed: 42
 
@@ -9,10 +9,11 @@ data:
   num_workers: 8
   pin_memory: true
   datasets:
-    - root: /home/featurize/data/data
+    - root: /home/featurize/data/eye3_mixed_unknown
       class_map:
-        sleepy: 0
-        awake: 1
+        closed: 0
+        open: 1
+        irrelevant: 2
 
 model:
   name: convnext_tiny

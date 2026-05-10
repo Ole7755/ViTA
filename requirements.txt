@@ -7,4 +7,3 @@ Pillow
 socksio
 onnxscript
 onnxruntime
-onnxconverter-common
