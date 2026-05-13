@@ -8,7 +8,7 @@ ViTA 是一个用于眼部状态识别的三分类训练项目，目标类别为
 | 1 | `open` | 睁眼 |
 | 2 | `unknown` | 无关图像 |
 
-当前仓库以 `convnext_tiny` 为主干模型，将输入图像统一 resize 到 `128 x 128`，只替换分类头进行微调。项目包含数据加载、训练、评测和吞吐量测试脚本，便于后续复现训练流程或继续微调模型。
+当前仓库以 `convnext_tiny` 为主干模型，将输入图像统一 resize 到 `128 x 128`。模型不是从零重新训练，而是加载 ImageNet pretrained 权重，替换为三分类分类头后，将主干网络和分类头一起 fine-tune。项目包含数据加载、训练、评测和吞吐量测试脚本，便于后续复现训练流程或继续微调模型。
 
 ## 项目结构
 
@@ -97,6 +97,18 @@ pip install -r requirements.txt
 | :- | :- |
 | GPU | RTX 3090 24GB |
 | CPU | 16-core AMD EPYC 7542 |
+
+## 模型与微调方式
+
+| Item | Setting |
+| :- | :- |
+| Backbone | `convnext_tiny` |
+| Input size | `[B, 3, 128, 128]` |
+| Parameters | 约 27.82M |
+| Initialization | ImageNet pretrained |
+| Fine-tuning | 替换三分类分类头，主干网络和分类头一起训练 |
+
+训练时不会冻结 `convnext_tiny` 主干参数；优化器会同时更新 backbone 和 classifier head。
 
 ## 配置文件
 
@@ -235,7 +247,6 @@ python3 -m vita.benchmark \
   --threads 16 \
   --output outputs/eye3_mixed_unknown_convnext_tiny_128_finetune/benchmark_cpu.json
 ```
-
 
 
 
