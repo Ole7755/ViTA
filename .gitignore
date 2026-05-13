@@ -43,4 +43,5 @@ Thumbs.db
 *.zip
 # Local reference files not needed for code release
 /related/
-
+AGENTS.md
+*.pptx
