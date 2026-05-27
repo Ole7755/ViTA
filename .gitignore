@@ -21,6 +21,9 @@
 *.temp
 /tmp/
 
+# Local one-off evaluation tests
+/tests/test_eval_real_onnx.py
+
 # Python cache and environments
 __pycache__/
 *.py[cod]

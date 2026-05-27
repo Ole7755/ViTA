@@ -4,6 +4,7 @@ timm
 PyYAML
 tqdm
 Pillow
+numpy
 socksio
 onnxscript
 onnxruntime
