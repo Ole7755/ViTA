@@ -37,12 +37,15 @@ def run_epoch(
     optimizer: torch.optim.Optimizer | None = None,
     scaler: GradScaler | None = None,
     amp: bool = False,
-) -> tuple[float, float]:
+    num_classes: int | None = None,
+) -> tuple[float, float, dict[int, float]]:
     training = optimizer is not None
     model.train(training)
     total_loss = 0.0
     total_samples = 0
     correct_samples = 0
+    class_correct = [0 for _ in range(num_classes or 0)]
+    class_total = [0 for _ in range(num_classes or 0)]
 
     iterator = tqdm(loader, leave=False, desc="train" if training else "val")
     with torch.set_grad_enabled(training):
@@ -68,12 +71,69 @@ def run_epoch(
             total_samples += batch_size
             preds = logits.argmax(dim=1)
             correct_samples += int((preds == targets).sum().detach().cpu())
+            if num_classes is not None:
+                for target, pred in zip(targets.detach().cpu(), preds.detach().cpu()):
+                    target_index = int(target)
+                    if 0 <= target_index < num_classes:
+                        class_total[target_index] += 1
+                        class_correct[target_index] += int(target_index == int(pred))
             iterator.set_postfix(
                 loss=total_loss / max(total_samples, 1),
                 acc=correct_samples / max(total_samples, 1),
             )
 
-    return total_loss / max(total_samples, 1), correct_samples / max(total_samples, 1)
+    per_class_accuracy = {
+        index: class_correct[index] / class_total[index] if class_total[index] > 0 else 0.0
+        for index in range(num_classes or 0)
+    }
+    return (
+        total_loss / max(total_samples, 1),
+        correct_samples / max(total_samples, 1),
+        per_class_accuracy,
+    )
+
+
+def resolve_class_weights(
+    cfg: dict[str, Any],
+    class_names: list[str],
+    counts: list[int],
+    device: torch.device,
+) -> torch.Tensor | None:
+    explicit_weights = cfg["train"].get("class_weights")
+    if explicit_weights is not None:
+        if isinstance(explicit_weights, dict):
+            weights = [float(explicit_weights.get(class_name, 1.0)) for class_name in class_names]
+        else:
+            weights = [float(value) for value in explicit_weights]
+            if len(weights) != len(class_names):
+                raise ValueError(
+                    f"class_weights length {len(weights)} does not match classes {len(class_names)}"
+                )
+        return torch.tensor(weights, dtype=torch.float32, device=device)
+
+    if bool(cfg["train"].get("class_weight", True)):
+        return compute_class_weights(counts, device=device)
+    return None
+
+
+def score_validation_metrics(
+    class_names: list[str],
+    val_metrics: dict[str, Any],
+    selection_metric: str,
+) -> float:
+    if selection_metric == "accuracy":
+        return float(val_metrics["accuracy"])
+    if selection_metric == "min_closed_open":
+        per_class = val_metrics["per_class_accuracy"]
+        closed = float(per_class[class_names.index("closed")])
+        open_ = float(per_class[class_names.index("open")])
+        return min(closed, open_)
+    if selection_metric == "min_closed_open_plus_0_3_closed":
+        per_class = val_metrics["per_class_accuracy"]
+        closed = float(per_class[class_names.index("closed")])
+        open_ = float(per_class[class_names.index("open")])
+        return min(closed, open_) + 0.3 * closed
+    raise ValueError(f"Unsupported selection_metric: {selection_metric}")
 
 
 def save_checkpoint(
@@ -116,9 +176,7 @@ def main() -> None:
     model = build_model(cfg, num_classes=len(class_names)).to(device)
 
     counts = label_counts(train_loader.dataset, num_classes=len(class_names))
-    class_weights = None
-    if bool(cfg["train"].get("class_weight", True)):
-        class_weights = compute_class_weights(counts, device=device)
+    class_weights = resolve_class_weights(cfg, class_names=class_names, counts=counts, device=device)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
 
     optimizer = torch.optim.AdamW(
@@ -144,8 +202,10 @@ def main() -> None:
     scaler = GradScaler("cuda", enabled=amp and device.type == "cuda")
 
     best_score = -1.0
+    selection_metric = str(cfg["train"].get("selection_metric", "accuracy"))
     history_path = output_dir / "metrics.csv"
     with history_path.open("w", newline="", encoding="utf-8") as f:
+        val_class_fields = [f"val_{class_name}_accuracy" for class_name in class_names]
         writer = csv.DictWriter(
             f,
             fieldnames=[
@@ -155,6 +215,8 @@ def main() -> None:
                 "train_accuracy",
                 "val_loss",
                 "val_accuracy",
+                *val_class_fields,
+                "selection_score",
                 "seconds",
             ],
         )
@@ -162,14 +224,26 @@ def main() -> None:
 
         for epoch in range(1, epochs + 1):
             started = time.perf_counter()
-            train_loss, train_acc = run_epoch(
+            train_loss, train_acc, _ = run_epoch(
                 model, train_loader, criterion, device, optimizer=optimizer, scaler=scaler, amp=amp
             )
-            val_loss, val_acc = run_epoch(model, val_loader, criterion, device, amp=amp)
+            val_loss, val_acc, val_per_class = run_epoch(
+                model,
+                val_loader,
+                criterion,
+                device,
+                amp=amp,
+                num_classes=len(class_names),
+            )
             scheduler.step()
 
-            score = float(val_acc)
-            val_metrics = {"accuracy": val_acc}
+            val_metrics = {
+                "accuracy": val_acc,
+                "per_class_accuracy": [
+                    float(val_per_class.get(index, 0.0)) for index in range(len(class_names))
+                ],
+            }
+            score = score_validation_metrics(class_names, val_metrics, selection_metric)
             if score > best_score:
                 best_score = score
                 save_checkpoint(
@@ -184,18 +258,27 @@ def main() -> None:
                 "train_accuracy": train_acc,
                 "val_loss": val_loss,
                 "val_accuracy": val_acc,
+                **{
+                    f"val_{class_name}_accuracy": val_per_class.get(index, 0.0)
+                    for index, class_name in enumerate(class_names)
+                },
+                "selection_score": score,
                 "seconds": time.perf_counter() - started,
             }
             writer.writerow(row)
             f.flush()
+            val_class_text = " ".join(
+                f"val_{class_name}_acc={val_per_class.get(index, 0.0):.4f}"
+                for index, class_name in enumerate(class_names)
+            )
             print(
                 "epoch={} train_loss={:.4f} train_acc={:.4f} "
-                "val_loss={:.4f} val_acc={:.4f}".format(
-                    epoch, train_loss, train_acc, val_loss, val_acc
+                "val_loss={:.4f} val_acc={:.4f} {} selection_score={:.4f}".format(
+                    epoch, train_loss, train_acc, val_loss, val_acc, val_class_text, score
                 )
             )
 
-    print("best_accuracy={:.4f}".format(best_score))
+    print("best_{}={:.4f}".format(selection_metric, best_score))
     print("output_dir={}".format(output_dir))
 
 

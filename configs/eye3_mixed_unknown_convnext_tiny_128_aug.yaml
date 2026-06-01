@@ -1,0 +1,47 @@
+experiment_name: eye3_mixed_unknown_convnext_tiny_128_aug_preprocess
+output_dir: outputs
+seed: 42
+
+data:
+  image_size: 128
+  batch_size: 512
+  eval_batch_size: 1024
+  num_workers: 8
+  pin_memory: true
+  train_augment: {}
+  train_augment_by_class:
+    closed:
+      rotation_degrees: 8
+      blue_purple_p: 0.25
+      blue_purple_strength: [0.08, 0.20]
+      grayscale_p: 0.30
+      low_contrast_p: 0.45
+      brightness: [0.70, 1.15]
+      contrast: [0.45, 1.0]
+      saturation: [0.0, 1.0]
+    open:
+      rotation_degrees: 6
+  datasets:
+    - root: /home/featurize/data/eye3_mixed_unknown
+      class_map:
+        closed: 0
+        open: 1
+        irrelevant: 2
+
+model:
+  name: convnext_tiny
+  pretrained: true
+
+train:
+  device: cuda
+  epochs: 8
+  lr: 0.00005
+  weight_decay: 0.05
+  warmup_epochs: 2
+  amp: true
+  class_weight: false
+  class_weights:
+    closed: 1.8
+    open: 1.0
+    irrelevant: 1.0
+  selection_metric: min_closed_open_plus_0_3_closed

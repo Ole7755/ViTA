@@ -6,5 +6,6 @@ tqdm
 Pillow
 numpy
 socksio
+onnx
 onnxscript
 onnxruntime
