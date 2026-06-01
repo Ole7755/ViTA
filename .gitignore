@@ -1,7 +1,7 @@
 # Local datasets
 /dataset/
 /data/
-
+/scripts/
 # Training outputs and model artifacts
 /outputs/
 /runs/
