@@ -1,0 +1,64 @@
+experiment_name: eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess
+output_dir: outputs
+seed: 42
+
+data:
+  image_size: 64
+  batch_size: 512
+  eval_batch_size: 1024
+  num_workers: 8
+  pin_memory: true
+  train_augment:
+    rotation_degrees: 30
+  train_augment_by_class:
+    closed:
+      blue_purple_p: 0.25
+      blue_purple_strength: [0.08, 0.20]
+      grayscale_p: 0.30
+      low_contrast_p: 0.45
+      brightness: [0.70, 1.15]
+      contrast: [0.45, 1.0]
+      saturation: [0.0, 1.0]
+      random_erasing_p: 0.20
+      random_erasing_scale: [0.02, 0.08]
+      random_erasing_ratio: [0.3, 3.3]
+      random_erasing_value: 0
+    open:
+      blue_purple_p: 0.15
+      blue_purple_strength: [0.08, 0.20]
+      grayscale_p: 0.10
+      low_contrast_p: 0.20
+      brightness: [0.70, 1.15]
+      contrast: [0.45, 1.0]
+      saturation: [0.0, 1.0]
+      random_erasing_p: 0.10
+      random_erasing_scale: [0.02, 0.08]
+      random_erasing_ratio: [0.3, 3.3]
+      random_erasing_value: 0
+  datasets:
+    - root: /home/featurize/data/eye3_mixed_unknown
+      class_map:
+        closed: 0
+        open: 1
+        irrelevant: 2
+    - root: /home/featurize/data/eye_dataset_split
+      class_map:
+        closed: 0
+        open: 1
+        irrelevant: 2
+
+model:
+  name: convnext_tiny
+  pretrained: true
+
+train:
+  device: cuda
+  epochs: 40
+  lr: 0.00005
+  weight_decay: 0.05
+  warmup_epochs: 4
+  amp: true
+  class_weight: false
+  selection_metric: mean_closed_open
+  early_stopping_patience: 8
+  early_stopping_min_delta: 0.0005

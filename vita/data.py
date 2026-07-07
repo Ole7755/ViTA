@@ -94,6 +94,15 @@ def _range_from_config(value: Any, default: tuple[float, float]) -> tuple[float,
     return (float(value[0]), float(value[1]))
 
 
+def _merge_augment_config(
+    base_config: dict[str, Any] | None,
+    class_config: dict[str, Any] | None,
+) -> dict[str, Any]:
+    merged = dict(base_config or {})
+    merged.update(class_config or {})
+    return merged
+
+
 def build_transform(image_size: int, train: bool, augment_config: dict[str, Any] | None = None):
     resize = transforms.Resize((image_size, image_size), antialias=True)
     common = [
@@ -155,9 +164,26 @@ def build_transform(image_size: int, train: bool, augment_config: dict[str, Any]
             )
         )
 
+    random_erasing_p = float(augment_config.get("random_erasing_p", 0))
     train_steps.extend(
         [
             transforms.ToTensor(),
+            *(
+                [
+                    transforms.RandomErasing(
+                        p=random_erasing_p,
+                        scale=_range_from_config(
+                            augment_config.get("random_erasing_scale"), default=(0.02, 0.08)
+                        ),
+                        ratio=_range_from_config(
+                            augment_config.get("random_erasing_ratio"), default=(0.3, 3.3)
+                        ),
+                        value=augment_config.get("random_erasing_value", 0),
+                    )
+                ]
+                if random_erasing_p > 0
+                else []
+            ),
             transforms.Normalize(mean=(0.485, 0.456, 0.406), std=(0.229, 0.224, 0.225)),
         ]
     )
@@ -169,12 +195,16 @@ def build_transforms_by_label(
     class_map: dict[str, int],
     image_size: int,
 ) -> dict[int, Any]:
+    base_augment = cfg["data"].get("train_augment", {})
     augment_by_class = cfg["data"].get("train_augment_by_class", {})
     return {
         int(label): build_transform(
             image_size=image_size,
             train=True,
-            augment_config=augment_by_class.get(class_name, {}),
+            augment_config=_merge_augment_config(
+                base_config=base_augment,
+                class_config=augment_by_class.get(class_name, {}),
+            ),
         )
         for class_name, label in class_map.items()
         if class_name in augment_by_class

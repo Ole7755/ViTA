@@ -27,7 +27,7 @@ def build_metadata(
     input_name: str,
     output_name: str,
 ) -> dict[str, Any]:
-    image_size = int(cfg["data"].get("image_size", 128))
+    image_size = int(cfg["data"].get("image_size", 64))
     return {
         "class_names": class_names,
         "input_name": input_name,
@@ -58,7 +58,7 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     input_name = "images"
     output_name = "logits"
-    image_size = int(cfg["data"].get("image_size", 128))
+    image_size = int(cfg["data"].get("image_size", 64))
     dummy = torch.randn(1, 3, image_size, image_size, device=device)
 
     torch.onnx.export(

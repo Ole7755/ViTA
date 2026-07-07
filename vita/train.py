@@ -99,6 +99,9 @@ def resolve_class_weights(
     counts: list[int],
     device: torch.device,
 ) -> torch.Tensor | None:
+    if not bool(cfg["train"].get("class_weight", True)):
+        return None
+
     explicit_weights = cfg["train"].get("class_weights")
     if explicit_weights is not None:
         if isinstance(explicit_weights, dict):
@@ -116,6 +119,14 @@ def resolve_class_weights(
     return None
 
 
+def is_early_stopping_improvement(score: float, best_score: float, min_delta: float) -> bool:
+    return score > best_score + min_delta
+
+
+def should_stop_early(epochs_without_improvement: int, patience: int) -> bool:
+    return patience > 0 and epochs_without_improvement >= patience
+
+
 def score_validation_metrics(
     class_names: list[str],
     val_metrics: dict[str, Any],
@@ -128,6 +139,11 @@ def score_validation_metrics(
         closed = float(per_class[class_names.index("closed")])
         open_ = float(per_class[class_names.index("open")])
         return min(closed, open_)
+    if selection_metric == "mean_closed_open":
+        per_class = val_metrics["per_class_accuracy"]
+        closed = float(per_class[class_names.index("closed")])
+        open_ = float(per_class[class_names.index("open")])
+        return (closed + open_) / 2.0
     if selection_metric == "min_closed_open_plus_0_3_closed":
         per_class = val_metrics["per_class_accuracy"]
         closed = float(per_class[class_names.index("closed")])
@@ -201,8 +217,15 @@ def main() -> None:
     amp = bool(cfg["train"].get("amp", True))
     scaler = GradScaler("cuda", enabled=amp and device.type == "cuda")
 
-    best_score = -1.0
+    best_score = float("-inf")
     selection_metric = str(cfg["train"].get("selection_metric", "accuracy"))
+    early_stopping_patience = int(cfg["train"].get("early_stopping_patience", 0))
+    early_stopping_min_delta = float(cfg["train"].get("early_stopping_min_delta", 0.0))
+    if early_stopping_patience < 0:
+        raise ValueError("early_stopping_patience must be >= 0")
+    if early_stopping_min_delta < 0:
+        raise ValueError("early_stopping_min_delta must be >= 0")
+    epochs_without_improvement = 0
     history_path = output_dir / "metrics.csv"
     with history_path.open("w", newline="", encoding="utf-8") as f:
         val_class_fields = [f"val_{class_name}_accuracy" for class_name in class_names]
@@ -244,11 +267,14 @@ def main() -> None:
                 ],
             }
             score = score_validation_metrics(class_names, val_metrics, selection_metric)
-            if score > best_score:
+            if is_early_stopping_improvement(score, best_score, early_stopping_min_delta):
                 best_score = score
+                epochs_without_improvement = 0
                 save_checkpoint(
                     output_dir / "best.pt", cfg, class_names, model, optimizer, epoch, val_metrics
                 )
+            else:
+                epochs_without_improvement += 1
             save_checkpoint(output_dir / "last.pt", cfg, class_names, model, optimizer, epoch, val_metrics)
 
             row = {
@@ -277,6 +303,17 @@ def main() -> None:
                     epoch, train_loss, train_acc, val_loss, val_acc, val_class_text, score
                 )
             )
+            if should_stop_early(epochs_without_improvement, early_stopping_patience):
+                print(
+                    "early_stopping epoch={} patience={} min_delta={} best_{}={:.4f}".format(
+                        epoch,
+                        early_stopping_patience,
+                        early_stopping_min_delta,
+                        selection_metric,
+                        best_score,
+                    )
+                )
+                break
 
     print("best_{}={:.4f}".format(selection_metric, best_score))
     print("output_dir={}".format(output_dir))
