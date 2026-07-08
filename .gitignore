@@ -2,6 +2,7 @@
 /dataset/
 /data/
 /scripts/
+/ppt/
 # Training outputs and model artifacts
 /outputs/
 /runs/
