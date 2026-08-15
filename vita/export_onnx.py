@@ -27,13 +27,17 @@ def build_metadata(
     input_name: str,
     output_name: str,
 ) -> dict[str, Any]:
-    image_size = int(cfg["data"].get("image_size", 64))
+    image_size = int(cfg["data"].get("image_size", 128))
     return {
         "class_names": class_names,
         "input_name": input_name,
         "output_name": output_name,
         "preprocess": {
             "resize": [image_size, image_size],
+            "interpolation": "bilinear",
+            "antialias": True,
+            "color_order": "RGB",
+            "input_scale": 255.0,
             "mean": [0.485, 0.456, 0.406],
             "std": [0.229, 0.224, 0.225],
         },
@@ -58,7 +62,7 @@ def main() -> None:
     output_path.parent.mkdir(parents=True, exist_ok=True)
     input_name = "images"
     output_name = "logits"
-    image_size = int(cfg["data"].get("image_size", 64))
+    image_size = int(cfg["data"].get("image_size", 128))
     dummy = torch.randn(1, 3, image_size, image_size, device=device)
 
     torch.onnx.export(

@@ -1,4 +1,4 @@
-experiment_name: eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01
+experiment_name: eye3_mixed_plus_eye_dataset_plus_badcase_swin_tiny_128_drop_path_01
 output_dir: outputs
 seed: 42
 
@@ -65,9 +65,10 @@ data:
         open: 1
 
 model:
-  name: convnext_tiny
+  name: swin_tiny_patch4_window7_224.ms_in1k
   pretrained: true
   kwargs:
+    img_size: 128
     drop_path_rate: 0.01
 
 train:

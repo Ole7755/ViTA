@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from io import BytesIO
 from pathlib import Path
 import random
 from typing import Any
@@ -35,6 +36,93 @@ class RandomBluePurpleTint:
         green = green.point(lambda value: max(0, int(value * (1.0 - strength * 0.35))))
         blue = blue.point(lambda value: min(255, int(value * (1.0 + strength))))
         return Image.merge("RGB", (red, green, blue))
+
+
+class RandomJPEGCompression:
+    """Round-trip a PIL image through JPEG to simulate camera compression artifacts."""
+
+    def __init__(self, p: float = 0.35, quality: tuple[int, int] = (25, 85)):
+        self.p = float(p)
+        self.quality = (int(quality[0]), int(quality[1]))
+        if not 1 <= self.quality[0] <= self.quality[1] <= 100:
+            raise ValueError(f"JPEG quality must satisfy 1 <= min <= max <= 100, got {quality}")
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        if self.p <= 0 or random.random() > self.p:
+            return image
+
+        quality = random.randint(*self.quality)
+        buffer = BytesIO()
+        image.convert("RGB").save(buffer, format="JPEG", quality=quality)
+        buffer.seek(0)
+        with Image.open(buffer) as compressed:
+            return compressed.convert("RGB").copy()
+
+
+class RandomScalePad:
+    """Shrink an image and paste it at a random position on an average-color canvas."""
+
+    def __init__(self, p: float = 0.5, scale: tuple[float, float] = (0.3, 0.7)):
+        self.p = float(p)
+        self.scale = (float(scale[0]), float(scale[1]))
+        if not 0 <= self.p <= 1:
+            raise ValueError(f"Scale-pad probability must be between 0 and 1, got {p}")
+        if not 0 < self.scale[0] <= self.scale[1] <= 1:
+            raise ValueError(
+                "Scale-pad range must satisfy 0 < min <= max <= 1, "
+                f"got {scale}"
+            )
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        if self.p <= 0 or random.random() > self.p:
+            return image
+
+        image = image.convert("RGB")
+        width, height = image.size
+        scale = random.uniform(*self.scale)
+        scaled_size = (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        )
+        scaled = image.resize(scaled_size, Image.Resampling.BILINEAR)
+
+        # Eye crops are usually surrounded by skin. An image-derived fill color
+        # avoids introducing the pure-black padding shortcut of affine transforms.
+        fill = image.resize((1, 1), Image.Resampling.BOX).getpixel((0, 0))
+        canvas = Image.new("RGB", (width, height), color=fill)
+        left = random.randint(0, width - scaled_size[0])
+        top = random.randint(0, height - scaled_size[1])
+        canvas.paste(scaled, (left, top))
+        return canvas
+
+
+class RandomDownsampleUpsample:
+    """Temporarily reduce image resolution and resize back to simulate low-resolution input."""
+
+    def __init__(self, p: float = 0.35, scale: tuple[float, float] = (0.4, 0.8)):
+        self.p = float(p)
+        self.scale = (float(scale[0]), float(scale[1]))
+        if not 0 <= self.p <= 1:
+            raise ValueError(f"Downsample probability must be between 0 and 1, got {p}")
+        if not 0 < self.scale[0] <= self.scale[1] < 1:
+            raise ValueError(
+                "Downsample range must satisfy 0 < min <= max < 1, "
+                f"got {scale}"
+            )
+
+    def __call__(self, image: Image.Image) -> Image.Image:
+        if self.p <= 0 or random.random() > self.p:
+            return image
+
+        image = image.convert("RGB")
+        width, height = image.size
+        scale = random.uniform(*self.scale)
+        reduced_size = (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        )
+        reduced = image.resize(reduced_size, Image.Resampling.BOX)
+        return reduced.resize((width, height), Image.Resampling.BILINEAR)
 
 
 class EyeImageFolder(Dataset):
@@ -94,6 +182,11 @@ def _range_from_config(value: Any, default: tuple[float, float]) -> tuple[float,
     return (float(value[0]), float(value[1]))
 
 
+def _int_range_from_config(value: Any, default: tuple[int, int]) -> tuple[int, int]:
+    low, high = _range_from_config(value, default=default)
+    return (int(round(low)), int(round(high)))
+
+
 def _merge_augment_config(
     base_config: dict[str, Any] | None,
     class_config: dict[str, Any] | None,
@@ -104,7 +197,13 @@ def _merge_augment_config(
 
 
 def build_transform(image_size: int, train: bool, augment_config: dict[str, Any] | None = None):
-    resize = transforms.Resize((image_size, image_size), antialias=True)
+    # Keep the deterministic resize contract explicit because the deployed
+    # blink-call classifier must reproduce this preprocessing.
+    resize = transforms.Resize(
+        (image_size, image_size),
+        interpolation=transforms.InterpolationMode.BILINEAR,
+        antialias=True,
+    )
     common = [
         resize,
         transforms.ToTensor(),
@@ -118,14 +217,42 @@ def build_transform(image_size: int, train: bool, augment_config: dict[str, Any]
 
     rotation_degrees = float(augment_config.get("rotation_degrees", 0))
     if rotation_degrees > 0:
+        rotation_p = float(augment_config.get("rotation_p", 1.0))
         train_steps.append(
-            transforms.RandomRotation(
-                degrees=(-rotation_degrees, rotation_degrees),
-                interpolation=transforms.InterpolationMode.BILINEAR,
+            transforms.RandomApply(
+                [
+                    transforms.RandomRotation(
+                        degrees=(-rotation_degrees, rotation_degrees),
+                        interpolation=transforms.InterpolationMode.BILINEAR,
+                    )
+                ],
+                p=rotation_p,
             )
         )
 
     train_steps.append(transforms.RandomHorizontalFlip(p=0.5))
+
+    scale_pad_p = float(augment_config.get("scale_pad_p", 0))
+    if scale_pad_p > 0:
+        train_steps.append(
+            RandomScalePad(
+                p=scale_pad_p,
+                scale=_range_from_config(
+                    augment_config.get("scale_pad_scale"), default=(0.3, 0.7)
+                ),
+            )
+        )
+
+    downsample_p = float(augment_config.get("downsample_p", 0))
+    if downsample_p > 0:
+        train_steps.append(
+            RandomDownsampleUpsample(
+                p=downsample_p,
+                scale=_range_from_config(
+                    augment_config.get("downsample_scale"), default=(0.4, 0.8)
+                ),
+            )
+        )
 
     blue_purple_p = float(augment_config.get("blue_purple_p", 0))
     if blue_purple_p > 0:
@@ -142,6 +269,36 @@ def build_transform(image_size: int, train: bool, augment_config: dict[str, Any]
     grayscale_p = float(augment_config.get("grayscale_p", 0))
     if grayscale_p > 0:
         train_steps.append(transforms.RandomGrayscale(p=grayscale_p))
+
+    gaussian_blur_p = float(augment_config.get("gaussian_blur_p", 0))
+    if gaussian_blur_p > 0:
+        kernel_size = int(augment_config.get("gaussian_blur_kernel_size", 7))
+        if kernel_size <= 0 or kernel_size % 2 == 0:
+            raise ValueError("gaussian_blur_kernel_size must be a positive odd integer")
+        train_steps.append(
+            transforms.RandomApply(
+                [
+                    transforms.GaussianBlur(
+                        kernel_size=kernel_size,
+                        sigma=_range_from_config(
+                            augment_config.get("gaussian_blur_sigma"), default=(0.1, 2.0)
+                        ),
+                    )
+                ],
+                p=gaussian_blur_p,
+            )
+        )
+
+    jpeg_compression_p = float(augment_config.get("jpeg_compression_p", 0))
+    if jpeg_compression_p > 0:
+        train_steps.append(
+            RandomJPEGCompression(
+                p=jpeg_compression_p,
+                quality=_int_range_from_config(
+                    augment_config.get("jpeg_quality"), default=(25, 85)
+                ),
+            )
+        )
 
     low_contrast_p = float(augment_config.get("low_contrast_p", 0))
     if low_contrast_p > 0:
@@ -211,7 +368,7 @@ def build_transforms_by_label(
     }
 
 
-def build_dataset(cfg: dict[str, Any], split: str, train: bool = False) -> Dataset:
+def build_datasets(cfg: dict[str, Any], split: str, train: bool = False) -> list[Dataset]:
     image_size = int(cfg["data"].get("image_size", 224))
     transform = build_transform(
         image_size=image_size,
@@ -235,6 +392,13 @@ def build_dataset(cfg: dict[str, Any], split: str, train: bool = False) -> Datas
                 transforms_by_label=transforms_by_label,
             )
         )
+    return datasets
+
+
+def build_dataset(cfg: dict[str, Any], split: str, train: bool = False) -> Dataset:
+    datasets = build_datasets(cfg, split=split, train=train)
+    if not datasets:
+        raise ValueError("No datasets configured under data.datasets")
     return datasets[0] if len(datasets) == 1 else ConcatDataset(datasets)
 
 
@@ -249,8 +413,7 @@ def label_counts(dataset: Dataset, num_classes: int = 2) -> list[int]:
     return [counter.get(i, 0) for i in range(num_classes)]
 
 
-def build_loader(cfg: dict[str, Any], split: str, train: bool = False) -> DataLoader:
-    dataset = build_dataset(cfg, split=split, train=train)
+def _build_loader(cfg: dict[str, Any], dataset: Dataset, train: bool) -> DataLoader:
     batch_size_key = "batch_size" if train else "eval_batch_size"
     batch_size = int(cfg["data"].get(batch_size_key, cfg["data"].get("batch_size", 64)))
     return DataLoader(
@@ -261,3 +424,18 @@ def build_loader(cfg: dict[str, Any], split: str, train: bool = False) -> DataLo
         pin_memory=bool(cfg["data"].get("pin_memory", True)),
         drop_last=False,
     )
+
+
+def build_loader(cfg: dict[str, Any], split: str, train: bool = False) -> DataLoader:
+    return _build_loader(cfg, build_dataset(cfg, split=split, train=train), train=train)
+
+
+def build_loaders_by_dataset(
+    cfg: dict[str, Any], split: str, train: bool = False
+) -> list[DataLoader]:
+    """Build one loader per configured dataset, preserving config order."""
+
+    return [
+        _build_loader(cfg, dataset, train=train)
+        for dataset in build_datasets(cfg, split=split, train=train)
+    ]

@@ -2,6 +2,10 @@
 /dataset/
 /data/
 /scripts/
+!/scripts/
+/scripts/*
+!/scripts/eval_dataset4.py
+!/scripts/eval_dataset4_gpu.py
 /ppt/
 # Training outputs and model artifacts
 /outputs/
@@ -50,3 +54,5 @@ Thumbs.db
 /related/
 AGENTS.md
 *.pptx
+scripts/eval_dataset4.py
+scripts/eval_dataset4_gpu.py

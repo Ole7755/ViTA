@@ -11,7 +11,7 @@ IMAGE_EXTENSIONS = {".bmp", ".jpeg", ".jpg", ".png", ".webp"}
 CLASS_NAMES = ["closed", "open"]
 CLASS_NAME_ALIASES = {"sleepy": "closed", "awake": "open", "close": "closed"}
 DEFAULT_PREPROCESS = {
-    "resize": [64, 64],
+    "resize": [128, 128],
     "mean": [0.485, 0.456, 0.406],
     "std": [0.229, 0.224, 0.225],
 }
@@ -262,7 +262,7 @@ def preprocess_image(path: Path, image_size: int, mean: np.ndarray, std: np.ndar
     from PIL import Image
 
     image = Image.open(path).convert("RGB")
-    image = image.resize((image_size, image_size), Image.BILINEAR)
+    image = image.resize((image_size, image_size), Image.Resampling.BILINEAR)
     array = np.asarray(image, dtype=np.float32) / 255.0
     array = (array - mean) / std
     return np.transpose(array, (2, 0, 1))

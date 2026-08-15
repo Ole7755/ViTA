@@ -1,4 +1,4 @@
-experiment_name: eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01
+experiment_name: eye3_mixed_plus_eye_dataset_plus_badcase_convnextv2_tiny_128_drop_path_01
 output_dir: outputs
 seed: 42
 
@@ -65,7 +65,7 @@ data:
         open: 1
 
 model:
-  name: convnext_tiny
+  name: convnextv2_tiny.fcmae_ft_in22k_in1k
   pretrained: true
   kwargs:
     drop_path_rate: 0.01

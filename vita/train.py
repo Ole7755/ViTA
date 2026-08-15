@@ -11,7 +11,7 @@ from torch import nn
 from torch.amp import GradScaler, autocast
 from tqdm import tqdm
 
-from .data import build_loader, label_counts
+from .data import build_loader, build_loaders_by_dataset, label_counts
 from .models import build_model
 from .utils import (
     class_names_from_config,
@@ -38,6 +38,7 @@ def run_epoch(
     scaler: GradScaler | None = None,
     amp: bool = False,
     num_classes: int | None = None,
+    desc: str | None = None,
 ) -> tuple[float, float, dict[int, float]]:
     training = optimizer is not None
     model.train(training)
@@ -47,7 +48,7 @@ def run_epoch(
     class_correct = [0 for _ in range(num_classes or 0)]
     class_total = [0 for _ in range(num_classes or 0)]
 
-    iterator = tqdm(loader, leave=False, desc="train" if training else "val")
+    iterator = tqdm(loader, leave=False, desc=desc or ("train" if training else "val"))
     with torch.set_grad_enabled(training):
         for images, targets in iterator:
             images = images.to(device, non_blocking=True)
@@ -91,6 +92,125 @@ def run_epoch(
         correct_samples / max(total_samples, 1),
         per_class_accuracy,
     )
+
+
+def dataset_names_from_config(cfg: dict[str, Any]) -> list[str]:
+    names: list[str] = []
+    used_names: set[str] = set()
+    for index, item in enumerate(cfg["data"]["datasets"], start=1):
+        name = str(item.get("name") or Path(item["root"]).name or f"dataset_{index}")
+        if name in used_names:
+            name = f"{name}_{index}"
+        used_names.add(name)
+        names.append(name)
+    return names
+
+
+def dataset_label_sets_from_config(cfg: dict[str, Any]) -> list[set[int]]:
+    return [
+        {int(label) for label in item["class_map"].values()}
+        for item in cfg["data"]["datasets"]
+    ]
+
+
+def dataset_metric_key(name: str) -> str:
+    key = "".join(character if character.isalnum() or character == "_" else "_" for character in name)
+    return key or "dataset"
+
+
+def evaluate_dataset_loaders(
+    model: nn.Module,
+    loaders,
+    dataset_names: list[str],
+    split: str,
+    criterion: nn.Module,
+    device: torch.device,
+    amp: bool,
+    num_classes: int,
+) -> dict[str, dict[str, Any]]:
+    metrics: dict[str, dict[str, Any]] = {}
+    for name, loader in zip(dataset_names, loaders):
+        loss, accuracy, per_class_accuracy = run_epoch(
+            model,
+            loader,
+            criterion,
+            device,
+            amp=amp,
+            num_classes=num_classes,
+            desc=f"{split}:{name}",
+        )
+        metrics[name] = {
+            "loss": loss,
+            "accuracy": accuracy,
+            "per_class_accuracy": per_class_accuracy,
+        }
+    return metrics
+
+
+def dataset_metric_fields(
+    dataset_names: list[str], class_names: list[str]
+) -> list[str]:
+    fields: list[str] = []
+    for split in ("train", "val"):
+        for name in dataset_names:
+            key = dataset_metric_key(name)
+            fields.extend(
+                [
+                    f"{split}_{key}_loss",
+                    f"{split}_{key}_accuracy",
+                    *[f"{split}_{key}_{class_name}_accuracy" for class_name in class_names],
+                ]
+            )
+    return fields
+
+
+def flatten_dataset_metrics(
+    metrics_by_split: dict[str, dict[str, dict[str, Any]]],
+    dataset_names: list[str],
+    class_names: list[str],
+    dataset_label_sets: list[set[int]],
+) -> dict[str, Any]:
+    row: dict[str, Any] = {}
+    for split, metrics in metrics_by_split.items():
+        for dataset_index, name in enumerate(dataset_names):
+            key = dataset_metric_key(name)
+            dataset_metrics = metrics[name]
+            row[f"{split}_{key}_loss"] = dataset_metrics["loss"]
+            row[f"{split}_{key}_accuracy"] = dataset_metrics["accuracy"]
+            per_class = dataset_metrics["per_class_accuracy"]
+            for class_index, class_name in enumerate(class_names):
+                field = f"{split}_{key}_{class_name}_accuracy"
+                row[field] = (
+                    per_class.get(class_index, 0.0)
+                    if class_index in dataset_label_sets[dataset_index]
+                    else ""
+                )
+    return row
+
+
+def format_dataset_metrics(
+    split: str,
+    metrics: dict[str, dict[str, Any]],
+    dataset_names: list[str],
+    class_names: list[str],
+    dataset_label_sets: list[set[int]],
+) -> str:
+    parts: list[str] = []
+    for dataset_index, name in enumerate(dataset_names):
+        dataset_metrics = metrics[name]
+        class_parts = []
+        for class_index, class_name in enumerate(class_names):
+            value = dataset_metrics["per_class_accuracy"].get(class_index, 0.0)
+            class_parts.append(
+                f"{class_name}={value:.4f}"
+                if class_index in dataset_label_sets[dataset_index]
+                else f"{class_name}=na"
+            )
+        parts.append(
+            f"{split}:{name}_acc={dataset_metrics['accuracy']:.4f} "
+            + " ".join(class_parts)
+        )
+    return " ".join(parts)
 
 
 def resolve_class_weights(
@@ -159,7 +279,7 @@ def save_checkpoint(
     model: nn.Module,
     optimizer: torch.optim.Optimizer,
     epoch: int,
-    metrics: dict[str, float],
+    metrics: dict[str, Any],
 ) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     torch.save(
@@ -173,6 +293,86 @@ def save_checkpoint(
         },
         path,
     )
+
+
+def serialize_dataset_metrics(
+    metrics_by_split: dict[str, dict[str, dict[str, Any]]],
+    class_names: list[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Convert integer class-index keys into readable metric keys."""
+
+    serialized: dict[str, dict[str, dict[str, Any]]] = {}
+    for split, dataset_metrics in metrics_by_split.items():
+        serialized[split] = {}
+        for dataset_name, metrics in dataset_metrics.items():
+            per_class = metrics.get("per_class_accuracy", {})
+            serialized[split][dataset_name] = {
+                "loss": float(metrics["loss"]),
+                "accuracy": float(metrics["accuracy"]),
+                "per_class_accuracy": {
+                    class_names[index]: float(per_class.get(index, 0.0))
+                    for index in range(len(class_names))
+                },
+            }
+    return serialized
+
+
+def evaluate_best_dataset_metrics(
+    best_path: Path,
+    model: nn.Module,
+    dataset_names: list[str],
+    criterion: nn.Module,
+    device: torch.device,
+    amp: bool,
+    num_classes: int,
+    train_loaders,
+    val_loaders,
+    cfg: dict[str, Any],
+    class_names: list[str],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    """Evaluate the saved best checkpoint on each configured dataset split."""
+
+    best_checkpoint = torch.load(best_path, map_location=device)
+    model.load_state_dict(best_checkpoint["model"])
+    test_loaders = build_loaders_by_dataset(cfg, split="test", train=False)
+    metrics_by_split = {
+        "train": evaluate_dataset_loaders(
+            model,
+            train_loaders,
+            dataset_names,
+            "best-train",
+            criterion,
+            device,
+            amp,
+            num_classes,
+        ),
+        "val": evaluate_dataset_loaders(
+            model,
+            val_loaders,
+            dataset_names,
+            "best-val",
+            criterion,
+            device,
+            amp,
+            num_classes,
+        ),
+        "test": evaluate_dataset_loaders(
+            model,
+            test_loaders,
+            dataset_names,
+            "best-test",
+            criterion,
+            device,
+            amp,
+            num_classes,
+        ),
+    }
+    serialized = serialize_dataset_metrics(metrics_by_split, class_names)
+    best_checkpoint_metrics = dict(best_checkpoint.get("metrics", {}))
+    best_checkpoint_metrics["dataset_metrics"] = serialized
+    best_checkpoint["metrics"] = best_checkpoint_metrics
+    torch.save(best_checkpoint, best_path)
+    return serialized
 
 
 def main() -> None:
@@ -189,6 +389,21 @@ def main() -> None:
 
     train_loader = build_loader(cfg, split="train", train=True)
     val_loader = build_loader(cfg, split="val", train=False)
+    report_dataset_metrics = bool(cfg["train"].get("report_dataset_metrics", False))
+    save_best_dataset_metrics = bool(cfg["train"].get("save_best_dataset_metrics", True))
+    track_dataset_metrics = report_dataset_metrics or save_best_dataset_metrics
+    dataset_names = dataset_names_from_config(cfg) if track_dataset_metrics else []
+    dataset_label_sets = dataset_label_sets_from_config(cfg) if track_dataset_metrics else []
+    train_dataset_loaders = (
+        build_loaders_by_dataset(cfg, split="train", train=False)
+        if track_dataset_metrics
+        else []
+    )
+    val_dataset_loaders = (
+        build_loaders_by_dataset(cfg, split="val", train=False)
+        if track_dataset_metrics
+        else []
+    )
     model = build_model(cfg, num_classes=len(class_names)).to(device)
 
     counts = label_counts(train_loader.dataset, num_classes=len(class_names))
@@ -229,6 +444,9 @@ def main() -> None:
     history_path = output_dir / "metrics.csv"
     with history_path.open("w", newline="", encoding="utf-8") as f:
         val_class_fields = [f"val_{class_name}_accuracy" for class_name in class_names]
+        per_dataset_fields = (
+            dataset_metric_fields(dataset_names, class_names) if report_dataset_metrics else []
+        )
         writer = csv.DictWriter(
             f,
             fieldnames=[
@@ -239,6 +457,7 @@ def main() -> None:
                 "val_loss",
                 "val_accuracy",
                 *val_class_fields,
+                *per_dataset_fields,
                 "selection_score",
                 "seconds",
             ],
@@ -258,6 +477,28 @@ def main() -> None:
                 amp=amp,
                 num_classes=len(class_names),
             )
+            dataset_metrics_by_split: dict[str, dict[str, dict[str, Any]]] = {}
+            if report_dataset_metrics:
+                dataset_metrics_by_split["train"] = evaluate_dataset_loaders(
+                    model,
+                    train_dataset_loaders,
+                    dataset_names,
+                    "train",
+                    criterion,
+                    device,
+                    amp,
+                    len(class_names),
+                )
+                dataset_metrics_by_split["val"] = evaluate_dataset_loaders(
+                    model,
+                    val_dataset_loaders,
+                    dataset_names,
+                    "val",
+                    criterion,
+                    device,
+                    amp,
+                    len(class_names),
+                )
             scheduler.step()
 
             val_metrics = {
@@ -266,16 +507,36 @@ def main() -> None:
                     float(val_per_class.get(index, 0.0)) for index in range(len(class_names))
                 ],
             }
+            checkpoint_metrics = dict(val_metrics)
+            if report_dataset_metrics:
+                checkpoint_metrics["dataset_metrics"] = serialize_dataset_metrics(
+                    dataset_metrics_by_split,
+                    class_names,
+                )
             score = score_validation_metrics(class_names, val_metrics, selection_metric)
             if is_early_stopping_improvement(score, best_score, early_stopping_min_delta):
                 best_score = score
                 epochs_without_improvement = 0
                 save_checkpoint(
-                    output_dir / "best.pt", cfg, class_names, model, optimizer, epoch, val_metrics
+                    output_dir / "best.pt",
+                    cfg,
+                    class_names,
+                    model,
+                    optimizer,
+                    epoch,
+                    checkpoint_metrics,
                 )
             else:
                 epochs_without_improvement += 1
-            save_checkpoint(output_dir / "last.pt", cfg, class_names, model, optimizer, epoch, val_metrics)
+            save_checkpoint(
+                output_dir / "last.pt",
+                cfg,
+                class_names,
+                model,
+                optimizer,
+                epoch,
+                checkpoint_metrics,
+            )
 
             row = {
                 "epoch": epoch,
@@ -288,6 +549,16 @@ def main() -> None:
                     f"val_{class_name}_accuracy": val_per_class.get(index, 0.0)
                     for index, class_name in enumerate(class_names)
                 },
+                **(
+                    flatten_dataset_metrics(
+                        dataset_metrics_by_split,
+                        dataset_names,
+                        class_names,
+                        dataset_label_sets,
+                    )
+                    if report_dataset_metrics
+                    else {}
+                ),
                 "selection_score": score,
                 "seconds": time.perf_counter() - started,
             }
@@ -297,10 +568,37 @@ def main() -> None:
                 f"val_{class_name}_acc={val_per_class.get(index, 0.0):.4f}"
                 for index, class_name in enumerate(class_names)
             )
+            dataset_metric_text = ""
+            if report_dataset_metrics:
+                dataset_metric_text = " " + " ".join(
+                    [
+                        format_dataset_metrics(
+                            "train",
+                            dataset_metrics_by_split["train"],
+                            dataset_names,
+                            class_names,
+                            dataset_label_sets,
+                        ),
+                        format_dataset_metrics(
+                            "val",
+                            dataset_metrics_by_split["val"],
+                            dataset_names,
+                            class_names,
+                            dataset_label_sets,
+                        ),
+                    ]
+                )
             print(
                 "epoch={} train_loss={:.4f} train_acc={:.4f} "
-                "val_loss={:.4f} val_acc={:.4f} {} selection_score={:.4f}".format(
-                    epoch, train_loss, train_acc, val_loss, val_acc, val_class_text, score
+                "val_loss={:.4f} val_acc={:.4f} {} selection_score={:.4f}{}".format(
+                    epoch,
+                    train_loss,
+                    train_acc,
+                    val_loss,
+                    val_acc,
+                    val_class_text,
+                    score,
+                    dataset_metric_text,
                 )
             )
             if should_stop_early(epochs_without_improvement, early_stopping_patience):
@@ -314,6 +612,40 @@ def main() -> None:
                     )
                 )
                 break
+
+    if save_best_dataset_metrics:
+        best_dataset_metrics = evaluate_best_dataset_metrics(
+            best_path=output_dir / "best.pt",
+            model=model,
+            dataset_names=dataset_names,
+            criterion=criterion,
+            device=device,
+            amp=amp,
+            num_classes=len(class_names),
+            train_loaders=train_dataset_loaders,
+            val_loaders=val_dataset_loaders,
+            cfg=cfg,
+            class_names=class_names,
+        )
+        save_json(
+            {
+                "checkpoint": str(output_dir / "best.pt"),
+                "epoch": int(torch.load(output_dir / "best.pt", map_location="cpu")["epoch"]),
+                "dataset_metrics": best_dataset_metrics,
+            },
+            output_dir / "best_dataset_metrics.json",
+        )
+        print("best checkpoint dataset metrics:")
+        for split, dataset_metrics in best_dataset_metrics.items():
+            print(
+                "  {}: {}".format(
+                    split,
+                    " ".join(
+                        f"{name}_acc={metrics['accuracy']:.4f}"
+                        for name, metrics in dataset_metrics.items()
+                    ),
+                )
+            )
 
     print("best_{}={:.4f}".format(selection_metric, best_score))
     print("output_dir={}".format(output_dir))

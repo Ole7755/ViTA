@@ -8,7 +8,7 @@ ViTA 是一个用于眼部状态识别的三分类训练项目。模型输入眼
 | 1 | `open` | 睁眼 |
 | 2 | `irrelevant` | 无关图像 |
 
-当前默认模型使用 `convnext_tiny` 作为 backbone，输入图像统一 resize 到 `64 x 64`。训练方式是加载 ImageNet pretrained 权重，替换三分类分类头后，对 backbone 和 classifier head 一起 fine-tune。
+当前默认模型使用 `convnext_tiny` 作为 backbone，输入图像统一 resize 到 `128 x 128`。训练方式是加载 ImageNet pretrained 权重，替换三分类分类头后，对 backbone 和 classifier head 一起 fine-tune。
 
 ## 项目结构
 
@@ -40,7 +40,14 @@ ViTA 是一个用于眼部状态识别的三分类训练项目。模型输入眼
 | open-closed-eyes-dataset | 1.5G | 139,804 images | 27,960 images | 6,990 images |
 | COCO images | - | 用作 `irrelevant` 类的非眼部图像来源 | - | - |
 
-当前训练使用整理后的三分类 ImageFolder 数据集。基础数据集为 `eye3_mixed_unknown`，新增泛化数据集为 `eye_dataset_split`。
+当前默认训练使用已整合的三分类 ImageFolder 数据集，并额外加入 badcase 数据集；
+`dataset4` 只作为真实场景测试集，不参与训练。
+服务器路径分别为 `/home/featurize/data/blink_dataset`、
+`/home/featurize/data/badcase/case1_dataset` 和
+`/home/featurize/data/badcase/case2_dataset`。badcase 只包含 `closed` 和 `open`，
+会沿用标签 0 和 1；训练、验证和测试三个 split 都会被合并读取。
+本地 badcase 原始目录对应为 `/Volumes/Elements/datasets/blink_data/badcase`，
+上传到服务器后应保持 `case1_dataset`、`case2_dataset` 两级目录结构。
 
 ### 数据下载
 
@@ -75,6 +82,8 @@ ViTA 是一个用于眼部状态识别的三分类训练项目。模型输入眼
 
 ```text
 <dataset_root>/
+├── manifest.csv
+├── metadata.json
 ├── train/
 │   ├── closed/
 │   ├── open/
@@ -121,7 +130,7 @@ onnxruntime
 | Item | Setting |
 | :- | :- |
 | Backbone | `convnext_tiny` |
-| Input size | `[B, 3, 64, 64]` |
+| Input size | `[B, 3, 128, 128]` |
 | Initialization | ImageNet pretrained |
 | Fine-tuning | backbone 和 classifier head 一起训练 |
 | Optimizer | AdamW |
@@ -149,9 +158,11 @@ onnxruntime
 通用训练预处理流程：
 
 ```text
-Resize((64, 64))
--> RandomRotation(±30°)
+Resize((128, 128))
+-> RandomRotation(±110°, p=0.5)
 -> RandomHorizontalFlip(p=0.5)
+-> optional Gaussian blur
+-> optional JPEG compression
 -> class-specific color augmentation
 -> ToTensor()
 -> optional RandomErasing
@@ -169,7 +180,7 @@ Resize((64, 64))
 Val/Test 预处理流程：
 
 ```text
-Resize((64, 64)) -> ToTensor() -> ImageNet mean/std normalize
+Resize((128, 128)) -> ToTensor() -> ImageNet mean/std normalize
 ```
 
 ## 配置文件
@@ -183,25 +194,45 @@ configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml
 关键字段：
 
 ```yaml
-experiment_name: eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess
+experiment_name: eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01
 
 data:
-  image_size: 64
-  batch_size: 512
-  eval_batch_size: 1024
+  image_size: 128
+  batch_size: 128
+  eval_batch_size: 256
   train_augment:
-    rotation_degrees: 30
+    rotation_degrees: 110
+    rotation_p: 0.50
+    gaussian_blur_p: 0.35
+    gaussian_blur_kernel_size: 7
+    gaussian_blur_sigma: [0.1, 2.0]
+    jpeg_compression_p: 0.35
+    jpeg_quality: [25, 85]
+    random_erasing_p: 0.20
+    random_erasing_scale: [0.02, 0.12]
   datasets:
-    - root: /path/to/eye3_mixed_unknown
+    - name: blink_dataset
+      root: /home/featurize/data/blink_dataset
       class_map:
         closed: 0
         open: 1
         irrelevant: 2
-    - root: /path/to/eye_dataset_split
+    - name: badcase_case1
+      root: /home/featurize/data/badcase/case1_dataset
       class_map:
         closed: 0
         open: 1
-        irrelevant: 2
+    - name: badcase_case2
+      root: /home/featurize/data/badcase/case2_dataset
+      class_map:
+        closed: 0
+        open: 1
+
+model:
+  name: convnext_tiny
+  pretrained: true
+  kwargs:
+    drop_path_rate: 0.1
 
 train:
   epochs: 40
@@ -209,12 +240,15 @@ train:
   lr: 0.00005
   weight_decay: 0.05
   class_weight: false
+  report_dataset_metrics: true
+  save_best_dataset_metrics: true
   selection_metric: mean_closed_open
   early_stopping_patience: 8
   early_stopping_min_delta: 0.0005
 ```
 
-复现训练时通常只需要修改 `data.datasets[*].root`，让它们指向本机或远程机器上的数据集目录。
+默认配置已指向新 Linux 服务器上的整合数据集。迁移到其他机器时，通常只需要修改
+`data.datasets[*].root`。
 
 ## 训练
 
@@ -236,17 +270,17 @@ python3 -m vita.train \
 后台训练并保存日志：
 
 ```bash
-mkdir -p outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess
+mkdir -p outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01
 
 nohup python3 -m vita.train \
   --config configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml \
-  > outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/train.log 2>&1 &
+  > outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/train.log 2>&1 &
 ```
 
 查看日志：
 
 ```bash
-tail -f outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/train.log
+tail -f outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/train.log
 ```
 
 训练输出会保存在：
@@ -256,8 +290,20 @@ outputs/<experiment_name>/
 ├── best.pt       # selection metric 最优 checkpoint
 ├── last.pt       # 最后一轮 checkpoint
 ├── config.json   # 本次训练使用的配置
-└── metrics.csv   # 每轮 train/val loss、ACC 和耗时
+├── metrics.csv   # 每轮总 train/val 及各数据集 loss、ACC、分类别 ACC 和耗时
+└── best_dataset_metrics.json  # best.pt 在各数据集 train/val/test 上的最终指标
 ```
+
+当 `train.report_dataset_metrics` 为 `true` 时，训练日志会额外输出
+`blink_dataset`、`badcase_case1` 和 `badcase_case2` 各自的 train/val 指标。
+这些指标使用不带随机增强的确定性预处理；它们只读取训练配置中的数据集，
+不会读取独立的 `dataset4` 测试目录。
+
+当 `train.save_best_dataset_metrics` 为 `true` 时，训练结束会重新加载
+`best.pt`，在 `blink_dataset`、`badcase_case1` 和 `badcase_case2` 的
+`train`、`val`、`test` split 上做确定性评估。结果会同时写入
+`best.pt` 的 `metrics.dataset_metrics` 和 `best_dataset_metrics.json`；
+`dataset4` 不参与这一步。
 
 如果 early stopping 被触发，训练会提前结束，但 `best.pt` 仍然保存验证指标最优的 checkpoint。
 
@@ -270,7 +316,7 @@ mkdir -p exports
 
 python3 -m vita.export_onnx \
   --config configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml \
-  --checkpoint outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/best.pt \
+  --checkpoint outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/best.pt \
   --output exports/eye_state_classification.onnx \
   --metadata-output exports/eye_state_classification.json \
   --device cpu \
@@ -282,7 +328,7 @@ python3 -m vita.export_onnx \
 | Item | Value |
 | :- | :- |
 | Input name | `images` |
-| Input shape | `[B, 3, 64, 64]` |
+| Input shape | `[B, 3, 128, 128]` |
 | Output name | `logits` |
 | Output shape | `[B, 3]` |
 | Dynamic batch | 支持 |
@@ -295,18 +341,27 @@ python3 -m vita.export_onnx \
 ```bash
 python3 -m vita.eval \
   --config configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml \
-  --checkpoint outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/best.pt \
+  --checkpoint outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/best.pt \
   --split test \
-  --output outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/test_metrics.json
+  --output outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/test_metrics.json
 ```
 
 ### ONNXRuntime 评测
+
+新服务器上的默认独立测试集为 `/home/featurize/data/test`，其中包含
+`cam0`、`cam1`、`dataset4`、`img` 四个子集。可使用专用脚本自动逐个评测并汇总：
+
+```bash
+python3 scripts/eval_dataset4.py
+```
+
+也可以使用通用评测入口并显式指定该目录：
 
 ```bash
 python3 -m vita.eval \
   --onnx exports/eye_state_classification.onnx \
   --metadata exports/eye_state_classification.json \
-  --data-root /path/to/eval_dataset \
+  --data-root /home/featurize/data/test \
   --split test \
   --batch-size 512 \
   --warmup-batches 5 \
@@ -362,14 +417,18 @@ metadata JSON 示例：
   "input_name": "images",
   "output_name": "logits",
   "preprocess": {
-    "resize": [64, 64],
+    "resize": [128, 128],
+    "interpolation": "bilinear",
+    "antialias": true,
+    "color_order": "RGB",
+    "input_scale": 255.0,
     "mean": [0.485, 0.456, 0.406],
     "std": [0.229, 0.224, 0.225]
   }
 }
 ```
 
-部署时需要保证应用侧预处理与 metadata 中的 `resize`、`mean`、`std` 完全一致。类别顺序固定为：
+部署时需要保证应用侧预处理与 metadata 中的 `resize`、`interpolation`、`color_order`、`input_scale`、`mean`、`std` 完全一致。类别顺序固定为：
 
 ```text
 0 -> closed
@@ -393,12 +452,12 @@ GPU 吞吐量：
 ```bash
 python3 -m vita.benchmark \
   --config configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml \
-  --checkpoint outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/best.pt \
+  --checkpoint outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/best.pt \
   --device cuda \
   --batch-size 1 \
   --warmup 20 \
   --steps 100 \
-  --output outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/benchmark_cuda.json
+  --output outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/benchmark_cuda.json
 ```
 
 CPU 吞吐量：
@@ -406,11 +465,11 @@ CPU 吞吐量：
 ```bash
 python3 -m vita.benchmark \
   --config configs/eye3_mixed_unknown_convnext_tiny_64_aug.yaml \
-  --checkpoint outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/best.pt \
+  --checkpoint outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/best.pt \
   --device cpu \
   --batch-size 1 \
   --warmup 20 \
   --steps 100 \
   --threads 16 \
-  --output outputs/eye3_mixed_plus_eye_dataset_convnext_tiny_64_aug_preprocess/benchmark_cpu.json
+  --output outputs/eye3_mixed_plus_eye_dataset_plus_badcase_convnext_tiny_128_drop_path_01/benchmark_cpu.json
 ```
