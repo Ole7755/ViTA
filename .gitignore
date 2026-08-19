@@ -6,6 +6,7 @@
 /scripts/*
 !/scripts/eval_dataset4.py
 !/scripts/eval_dataset4_gpu.py
+!/scripts/eval_four_models.py
 /ppt/
 # Training outputs and model artifacts
 /outputs/

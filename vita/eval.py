@@ -53,6 +53,12 @@ def parse_args() -> argparse.Namespace:
         help="Number of ONNX batches to warm up before timed evaluation.",
     )
     parser.add_argument("--output", default=None, help="Optional metrics JSON path.")
+    parser.add_argument(
+        "--confidence-threshold",
+        type=float,
+        default=0.5,
+        help="A prediction is accepted only when softmax confidence is greater than this value.",
+    )
     return parser.parse_args()
 
 
@@ -319,6 +325,8 @@ def summarize_metrics(
     class_names: list[str],
     total_seconds: float,
     inference_seconds: float,
+    strict_confusion: list[list[int]] | None = None,
+    confidence_threshold: float = 0.5,
 ) -> dict[str, Any]:
     per_class_accuracy = {}
     for index, class_name in enumerate(class_names):
@@ -326,11 +334,36 @@ def summarize_metrics(
         per_class_accuracy[class_name] = (
             confusion[index][index] / class_total if class_total > 0 else 0.0
         )
+    if strict_confusion is None:
+        # Preserve the historical behavior for callers that do not provide
+        # confidence-filtered counts: every argmax prediction is treated as
+        # accepted.
+        strict_confusion = [row[:] for row in confusion]
+    strict_total = sum(sum(row) for row in strict_confusion)
+    strict_correct = sum(
+        strict_confusion[index][index]
+        for index in range(min(len(class_names), len(strict_confusion)))
+    )
+    strict_per_class_accuracy = {
+        class_name: (
+            strict_confusion[index][index] / max(sum(confusion[index]), 1)
+            if index < len(strict_confusion)
+            else 0.0
+        )
+        for index, class_name in enumerate(class_names)
+    }
     return {
         "accuracy": correct / max(total, 1),
+        "raw_accuracy": correct / max(total, 1),
+        "strict_accuracy": strict_correct / max(total, 1),
+        "coverage": strict_total / max(total, 1),
+        "accepted_accuracy": strict_correct / max(strict_total, 1),
+        "confidence_threshold": confidence_threshold,
         "class_names": class_names,
         "per_class_accuracy": per_class_accuracy,
+        "strict_per_class_accuracy": strict_per_class_accuracy,
         "confusion_matrix": confusion,
+        "strict_confusion_matrix": strict_confusion,
         "num_samples": total,
         "total_seconds": total_seconds,
         "inference_seconds": inference_seconds,
@@ -353,6 +386,7 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
     mean = np.asarray(preprocess["mean"], dtype=np.float32)
     std = np.asarray(preprocess["std"], dtype=np.float32)
     batch_size = resolve_batch_size(cfg, args.batch_size)
+    confidence_threshold = float(getattr(args, "confidence_threshold", 0.5))
     sample_groups = collect_sample_groups(cfg, class_names, data_root=args.data_root, split=args.split)
     samples = [sample for group_samples in sample_groups.values() for sample in group_samples]
 
@@ -375,6 +409,7 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
             session.run(output_names, {input_name: images})
 
     confusion = empty_confusion(class_names)
+    strict_confusion = empty_confusion(class_names)
     correct = 0
     total = 0
     inference_seconds = 0.0
@@ -382,6 +417,7 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
     total_start = time.perf_counter()
     for subset_name, subset_samples in sample_groups.items():
         subset_confusion = empty_confusion(class_names)
+        subset_strict_confusion = empty_confusion(class_names)
         subset_correct = 0
         subset_total = 0
         subset_inference_seconds = 0.0
@@ -399,8 +435,17 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
             elapsed = time.perf_counter() - inference_start
             inference_seconds += elapsed
             subset_inference_seconds += elapsed
-            preds = np.argmax(logits, axis=1)
+            probabilities = np.exp(logits - np.max(logits, axis=1, keepdims=True))
+            probabilities /= np.sum(probabilities, axis=1, keepdims=True)
+            preds = np.argmax(probabilities, axis=1)
+            confidences = probabilities[np.arange(len(preds)), preds]
+            accepted = confidences > confidence_threshold
             subset_correct += update_confusion(subset_confusion, targets=targets, preds=preds)
+            update_confusion(
+                subset_strict_confusion,
+                targets=targets[accepted],
+                preds=preds[accepted],
+            )
             subset_total += int(targets.shape[0])
 
         subset_metrics = summarize_metrics(
@@ -410,9 +455,12 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
             class_names=class_names,
             total_seconds=time.perf_counter() - subset_start,
             inference_seconds=subset_inference_seconds,
+            strict_confusion=subset_strict_confusion,
+            confidence_threshold=confidence_threshold,
         )
         subsets[subset_name] = subset_metrics
         add_confusion(confusion, subset_confusion)
+        add_confusion(strict_confusion, subset_strict_confusion)
         correct += subset_correct
         total += subset_total
 
@@ -423,6 +471,8 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
         class_names=class_names,
         total_seconds=time.perf_counter() - total_start,
         inference_seconds=inference_seconds,
+        strict_confusion=strict_confusion,
+        confidence_threshold=confidence_threshold,
     )
     metrics.update(
         {
@@ -440,13 +490,21 @@ def evaluate_onnx_file(args: argparse.Namespace, cfg: dict[str, Any], class_name
     return metrics
 
 
-def evaluate_torch_model(model: Any, loader: Any, device: Any, amp: bool, class_names: list[str]) -> dict:
+def evaluate_torch_model(
+    model: Any,
+    loader: Any,
+    device: Any,
+    amp: bool,
+    class_names: list[str],
+    confidence_threshold: float = 0.5,
+) -> dict:
     import torch
     from torch.amp import autocast
 
     model.eval()
     num_classes = len(class_names)
     confusion = [[0 for _ in class_names] for _ in class_names]
+    strict_confusion = [[0 for _ in class_names] for _ in class_names]
     correct = 0
     total = 0
     inference_seconds = 0.0
@@ -463,9 +521,17 @@ def evaluate_torch_model(model: Any, loader: Any, device: Any, amp: bool, class_
             if device.type == "cuda":
                 torch.cuda.synchronize(device)
             inference_seconds += time.perf_counter() - inference_start
-            preds = logits.argmax(dim=1).detach().cpu().numpy()
+            probabilities = torch.softmax(logits.float(), dim=1)
+            confidences, pred_indices = probabilities.max(dim=1)
+            preds = pred_indices.detach().cpu().numpy()
             target_values = targets.detach().cpu().numpy()
+            accepted = confidences.detach().cpu().numpy() > confidence_threshold
             correct += update_confusion(confusion, targets=target_values, preds=preds)
+            update_confusion(
+                strict_confusion,
+                targets=target_values[accepted],
+                preds=preds[accepted],
+            )
             total += int(targets.size(0))
 
     metrics = summarize_metrics(
@@ -475,6 +541,8 @@ def evaluate_torch_model(model: Any, loader: Any, device: Any, amp: bool, class_
         class_names=class_names[:num_classes],
         total_seconds=time.perf_counter() - total_start,
         inference_seconds=inference_seconds,
+        strict_confusion=strict_confusion,
+        confidence_threshold=confidence_threshold,
     )
     return metrics
 
@@ -503,6 +571,7 @@ def evaluate_checkpoint(args: argparse.Namespace, cfg: dict[str, Any], class_nam
         device,
         amp=bool(cfg["train"].get("amp", True)),
         class_names=class_names,
+        confidence_threshold=float(getattr(args, "confidence_threshold", 0.5)),
     )
     metrics["backend"] = "pytorch"
     metrics["device"] = str(device)
@@ -514,6 +583,8 @@ def validate_args(args: argparse.Namespace, cfg: dict[str, Any]) -> None:
         raise ValueError("--config is required when evaluating --checkpoint.")
     if args.onnx and not cfg and args.data_root is None:
         raise ValueError("ONNX evaluation without --config needs --data-root.")
+    if not 0.0 <= args.confidence_threshold < 1.0:
+        raise ValueError("--confidence-threshold must be >= 0 and < 1")
 
 
 def main() -> None:
@@ -527,6 +598,11 @@ def main() -> None:
         else evaluate_checkpoint(args, cfg, class_names)
     )
     print(f"ACC: {metrics['accuracy']:.4f}")
+    print(f"Raw accuracy: {metrics['raw_accuracy']:.4f}")
+    print(f"Strict accuracy: {metrics['strict_accuracy']:.4f}")
+    print(f"Coverage: {metrics['coverage']:.4f}")
+    print(f"Accepted accuracy: {metrics['accepted_accuracy']:.4f}")
+    print(f"Confidence threshold: {metrics['confidence_threshold']:.4f}")
     print(f"Samples: {metrics['num_samples']}")
     print(f"Total FPS: {metrics['samples_per_second']:.2f}")
     print(f"Inference FPS: {metrics['inference_samples_per_second']:.2f}")
